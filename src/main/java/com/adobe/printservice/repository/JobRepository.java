@@ -22,13 +22,13 @@ public interface JobRepository extends JpaRepository<Job, String> {
      */
     @Modifying
     @Query("""
-            update Job j
-               set j.status = com.adobe.printservice.model.JobStatus.PROCESSING,
-                   j.updatedAt = CURRENT_TIMESTAMP
-             where j.id = :id
-               and j.status = com.adobe.printservice.model.JobStatus.QUEUED
-            """)
-    int claim(@Param("id") String id);
+        update Job j
+           set j.status = com.adobe.printservice.model.JobStatus.PROCESSING,
+               j.updatedAt = :now
+         where j.id = :id
+           and j.status = com.adobe.printservice.model.JobStatus.QUEUED
+        """)
+    int claim(@Param("id") String id, @Param("now") Instant now);
 
     /**
      * Candidates for the next poll cycle: queued jobs with no backoff pending,
