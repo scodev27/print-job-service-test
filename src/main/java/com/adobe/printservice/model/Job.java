@@ -52,6 +52,9 @@ public class Job {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt = Instant.now();
 
+    @Column(name = "next_attempt_at")
+    private Instant nextAttemptAt;
+
     public String getId() {
         return id;
     }
@@ -122,5 +125,13 @@ public class Job {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public Instant getNextAttemptAt() {
+        return nextAttemptAt;
+    }
+
+    public void setNextAttemptAt(Instant nextAttemptAt) {
+        this.nextAttemptAt = nextAttemptAt;
     }
 }
