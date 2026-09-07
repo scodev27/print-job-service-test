@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.List;
 
 public interface JobRepository extends JpaRepository<Job, String> {
@@ -28,4 +29,15 @@ public interface JobRepository extends JpaRepository<Job, String> {
                and j.status = com.adobe.printservice.model.JobStatus.QUEUED
             """)
     int claim(@Param("id") String id);
+
+    /**
+     * Candidates for the next poll cycle: queued jobs with no backoff pending,
+     * or whose backoff window has already elapsed.
+     */
+    @Query("""
+        select j from Job j
+         where j.status = com.adobe.printservice.model.JobStatus.QUEUED
+           and (j.nextAttemptAt is null or j.nextAttemptAt <= :now)
+        """)
+    List<Job> findQueuedReadyForProcessing(@Param("now") Instant now);
 }
