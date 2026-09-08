@@ -17,7 +17,6 @@ public class JobWorker {
     private final JobRepository jobRepository;
     private final JobProcessor jobProcessor;
 
-
     public JobWorker(JobRepository jobRepository, JobProcessor jobProcessor) {
         this.jobRepository = jobRepository;
         this.jobProcessor = jobProcessor;
