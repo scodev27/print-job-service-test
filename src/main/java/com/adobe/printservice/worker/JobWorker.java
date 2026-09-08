@@ -1,6 +1,7 @@
 package com.adobe.printservice.worker;
 
 import com.adobe.printservice.repository.JobRepository;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -12,6 +13,7 @@ import java.time.Instant;
  * claim ensures only one instance ever wins the race to process a given job.
  */
 @Component
+@ConditionalOnProperty(name = "job.worker.enabled", havingValue = "true", matchIfMissing = true)
 public class JobWorker {
 
     private final JobRepository jobRepository;
