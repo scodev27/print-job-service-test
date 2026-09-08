@@ -110,3 +110,95 @@ Listing available templates
 ```shell
 $ curl localhost:8080/templates
 ```
+
+---
+
+## Solution
+ 
+### Operational endpoints
+ 
+| Purpose    | Path                          |
+|------------|--------------------------------|
+| Liveness   | `GET /actuator/health/liveness`  |
+| Readiness  | `GET /actuator/health/readiness` |
+| Metrics    | `GET /actuator/jobmetrics`       |
+ 
+`GET /actuator/jobmetrics` returns job counts grouped by status, e.g.:
+ 
+```json
+{ "QUEUED": 0, "PROCESSING": 0, "DONE": 3, "FAILED": 1 }
+```
+ 
+### Design Decisions
+ 
+**Queue / worker implementation.** A single `@Scheduled` poller (`JobWorker`) runs on a fixed
+delay and queries for jobs in `QUEUED` status whose backoff window (if any) has elapsed. Each
+candidate is handed to `JobProcessor`, which claims and processes it inside its own transaction.
+Polling was chosen over an event-driven approach (e.g. publishing an in-process event on submit)
+because it guarantees no job is ever silently lost if the instance that received the `POST`
+crashes before processing starts - any other instance's next poll cycle will still pick it up.
+The trade-off is latency bounded by the poll interval (configurable via
+`job.worker.poll-interval-ms`, default 2s), which is acceptable for this exercise.
+ 
+**Retry policy.** Jobs carry an `attempts` counter and a `nextAttemptAt` timestamp (added to the
+`Job` entity, which deliberately did not model retry scheduling). On a transient failure, the job
+is requeued with `attempts` incremented and `nextAttemptAt` pushed forward using exponential
+backoff (`5s * 2^attempts`), up to a bounded maximum of 3 attempts, after which it is marked
+`FAILED` with the failure reason recorded in `errorMessage`. Rendering itself is simulated via a
+pluggable `RenderExecutor` (a 30% chance of throwing `RenderException`), kept separate from
+`JobProcessor` so retry/backoff logic can be unit-tested independently of the rendering strategy.
+ 
+**Preventing double processing across instances.** Rather than an external lock (e.g. Redis) or
+`SELECT ... FOR UPDATE SKIP LOCKED`, claiming a job is done with a single atomic conditional
+`UPDATE`:
+ 
+```sql
+update job set status = 'PROCESSING', updated_at = :now
+where id = :id and status = 'QUEUED'
+```
+ 
+The number of affected rows tells the caller whether it won the race (`1`) or another instance
+already claimed the job first (`0`), with no coordination needed beyond what the database already
+guarantees for a single statement. This was chosen over `SKIP LOCKED` for simplicity - it's
+easier to reason about and verify in a short exercise - at the cost of each worker still issuing
+a preceding `SELECT` to find candidates, which `SKIP LOCKED` would fold into a single statement.
+This was verified empirically by running two instances against the same database and submitting
+10 jobs concurrently: both instances polled and attempted the same candidates, but exactly one
+`UPDATE` succeeded per job (see "Running multiple instances" below) - all 10 jobs ended up `DONE`
+with no duplicate processing.
+ 
+**Readiness check.** The readiness endpoint includes Spring Boot Actuator's `db` health indicator
+alongside the default `readinessState`, so it reports `DOWN` if the database is unreachable - not
+just "the HTTP server accepted the connection." This matters because a caller (e.g. a Kubernetes
+load balancer) should stop routing traffic to an instance that is up but cannot actually serve
+requests.
+ 
+**`GET /jobs/{id}/result` semantics.** Three cases are distinguished by status code:
+- `DONE` → `200` with the rendered content.
+- `FAILED` → `409 Conflict` - the job exists and is in a valid, terminal state, but a result will
+  never exist for it.
+- `QUEUED` / `PROCESSING` → `202 Accepted` - not an error, the job is simply not finished yet;
+  distinct from `404`, since the job does exist.
+  
+### Running multiple instances
+ 
+`docker-compose.yml` maps the `app` service to a port range (`8080-8081:8080`) so it can be
+scaled without a port conflict:
+ 
+```shell
+$ docker compose up --build --scale app=2
+```
+ 
+Both instances poll and attempt to claim the same queued jobs; the atomic claim query ensures
+each job is processed by exactly one of them. This was verified by submitting 10 jobs while 2
+instances were running: the logs show both instances issuing the same `UPDATE ... WHERE
+status='QUEUED'` for overlapping candidates, and `GET /actuator/jobmetrics` afterwards reported
+all 10 jobs `DONE` with none duplicated or lost.
+ 
+### Kubernetes manifest
+ 
+`k8s/deployment.yaml` and `k8s/service.yaml` provide a `Deployment` (2 replicas, since the atomic
+claim makes horizontal scaling safe with no extra coordination) and a `ClusterIP` `Service`. The
+`Deployment` wires the liveness and readiness probes to the same Actuator endpoints described
+above, and reads database credentials from a `Secret` rather than plain environment values (unlike
+the local `docker-compose.yml`, where inline credentials are acceptable for development).
